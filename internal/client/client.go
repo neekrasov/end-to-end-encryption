@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,17 @@ import (
 )
 
 func Client() error {
+	fmt.Print("Enter room identifier: ")
+	input, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil {
+		return errors.Wrap(err, "failed to read message")
+	}
+
+	roomID, err := strconv.Atoi(strings.TrimSpace(input))
+	if err != nil {
+		return errors.Wrap(err, "failed to cast roomID into int")
+	}
+
 	fmt.Println("Generate keys...")
 	pubKey, privKey, err := rsa.GenerateKeys(512)
 	if err != nil {
@@ -30,9 +42,6 @@ func Client() error {
 		return errors.Wrap(err, "failed to initialize registrar connection")
 	}
 	defer serverConn.Close()
-
-	roomID := 123
-	reader := bufio.NewReader(serverConn)
 
 	fmt.Println("Make initial message")
 	initialMsg, err := dto.MakeMessage(dto.Connect, &dto.InitialMsg{
@@ -53,6 +62,7 @@ func Client() error {
 		return errors.Wrap(err, "failed to send initial message")
 	}
 
+	reader := bufio.NewReader(serverConn)
 	updateRecipientPubKey := make(chan *rsa.PublicKey)
 	go func(r *bufio.Reader, updateRecipientPubKey chan *rsa.PublicKey, privKey *rsa.PrivateKey) {
 		if err := readRecipient(r, updateRecipientPubKey, privKey); err != nil {
