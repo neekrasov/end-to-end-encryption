@@ -15,19 +15,11 @@ import (
 	"github.com/pkg/errors"
 )
 
-type RoomManager interface {
-	Create(id room.RoomID)
-	GetRoom(id room.RoomID) (*room.Room, error)
-	SetFirst(id room.RoomID, client *room.Client) error
-	SetSecond(id room.RoomID, client *room.Client) error
-	RemoveClient(addr string) bool
-}
-
 type Server struct {
-	rooms RoomManager
+	rooms *room.RoomManager
 }
 
-func New(roomManager RoomManager) *Server {
+func New(roomManager *room.RoomManager) *Server {
 	return &Server{rooms: roomManager}
 }
 
