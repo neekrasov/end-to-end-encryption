@@ -23,11 +23,11 @@ type (
 )
 
 func GenerateKeys(bits int) (*PublicKey, *PrivateKey, error) {
-	p, err := generatePrime(bits)
+	p, err := GeneratePrime(bits)
 	if err != nil {
 		return nil, nil, err
 	}
-	q, err := generatePrime(bits)
+	q, err := GeneratePrime(bits)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -116,7 +116,7 @@ func cmdRun(args ...string) (string, error) {
 	return stdout.String(), nil
 }
 
-func generatePrime(bits int) (*big.Int, error) {
+func GeneratePrime(bits int) (*big.Int, error) {
 	output, err := cmdRun("openssl", "prime", "-generate", "-bits", strconv.Itoa(bits), "-hex")
 	if err != nil {
 		return nil, errors.New("error generating: %s")

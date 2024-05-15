@@ -9,6 +9,7 @@ import (
 	"net"
 	"runtime/debug"
 
+	"github.com/neekrasov/end-to-end-encryption/internal/dto"
 	"github.com/neekrasov/end-to-end-encryption/pkg/room"
 	"github.com/neekrasov/end-to-end-encryption/pkg/tcp"
 	"github.com/pkg/errors"
@@ -65,14 +66,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 			return
 		}
 
-		var msg tcp.Message
+		var msg dto.Message
 		if err := json.Unmarshal(msgBytes, &msg); err != nil {
 			log.Printf("Failed to unmarshall message: %s", err.Error())
 			return
 		}
 
 		switch msg.Type {
-		case tcp.Connect:
+		case dto.Connect:
 			client, roomID, position, err := s.handleInitial(conn, msg)
 			if err != nil {
 				log.Printf("failed to handle initial connect: %s", err.Error())
@@ -80,7 +81,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 
 			log.Printf("Client %s joined to room %d on %s position", client.Addr, roomID, position)
-		case tcp.Text:
+		case dto.CipherData:
 			if err := s.handleText(conn, msg); err != nil {
 				log.Printf("failed to handle text: %s", err.Error())
 				return
@@ -92,7 +93,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 }
 
-func (s *Server) handleInitial(conn net.Conn, msg tcp.Message) (*room.Client, room.RoomID, room.Role, error) {
+func (s *Server) handleInitial(conn net.Conn, msg dto.Message) (*room.Client, room.RoomID, room.Role, error) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("we was in panic: \n %v \n %v", string(debug.Stack()), fmt.Errorf("%v", r))
@@ -100,13 +101,12 @@ func (s *Server) handleInitial(conn net.Conn, msg tcp.Message) (*room.Client, ro
 		}
 	}()
 
-	var initialMsg tcp.InitialMessage
+	var initialMsg dto.InitialMsg
 	if err := json.Unmarshal(msg.Payload, &initialMsg); err != nil {
 		return nil, 0, "", errors.Wrap(err, "failed to unmarshall initial message")
 	}
 
 	roomID := room.RoomID(initialMsg.Room)
-
 	selectedRoom, err := s.rooms.GetRoom(roomID)
 	if err != nil {
 		s.rooms.Create(roomID)
@@ -170,7 +170,7 @@ func keyExchange(selectedRoom *room.Room, client *room.Client, role room.Role) (
 		)
 	}
 
-	keyExhangeMessage, err := tcp.MakeMessage(tcp.KeysExchange, tcp.KeyExchangeMessage{
+	keyExhangeMessage, err := dto.MakeMessage(dto.KeysExchange, dto.KeyExchangeMsg{
 		PublicKey: otherClient.PublicKey,
 	})
 	if err != nil {
@@ -199,20 +199,18 @@ func keyExchange(selectedRoom *room.Room, client *room.Client, role room.Role) (
 	return client, selectedRoom.ID, role, nil
 }
 
-func (s *Server) handleText(conn net.Conn, msg tcp.Message) error {
-	var textMsg tcp.TextMessage
+func (s *Server) handleText(conn net.Conn, msg dto.Message) error {
+	var textMsg dto.CypherMsg
 	if err := json.Unmarshal(msg.Payload, &textMsg); err != nil {
 		return errors.Wrap(err, "failed to unmarshall text message")
 	}
 
-	clientAddr := conn.RemoteAddr().String()
-	roomID := room.RoomID(textMsg.Room)
-
-	selectedRoom, err := s.rooms.GetRoom(roomID)
+	selectedRoom, err := s.rooms.GetRoom(room.RoomID(textMsg.RoomID))
 	if err != nil {
 		return errors.Wrap(err, "failed to get room")
 	}
 
+	clientAddr := conn.RemoteAddr().String()
 	if selectedRoom.First != nil && selectedRoom.First.Addr != clientAddr &&
 		selectedRoom.Second != nil && selectedRoom.Second.Addr != clientAddr {
 		return fmt.Errorf("unexpected room")
