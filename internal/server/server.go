@@ -56,7 +56,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	for {
 		var msgBytes []byte
 		if err := tcp.Read(reader, &msgBytes); err != nil {
-			if errors.Is(err, io.EOF) {
+			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, net.ErrWriteToConnected) {
 				addr := conn.RemoteAddr().String()
 				s.rooms.RemoveClient(addr)
 				log.Printf("Сlient %s disconnected", addr)
@@ -194,6 +194,34 @@ func keyExchange(selectedRoom *room.Room, client *room.Client, role room.Role) (
 			fmt.Sprintf("failed to send key exchange message from client (%s) to client (%s)",
 				otherClient.Addr, client.Addr),
 		)
+	}
+	client.HavePubKeyRecipient = true
+
+	if otherClient.HavePubKeyRecipient {
+		keyExhangeMessage, err := dto.MakeMessage(dto.KeysExchange,
+			dto.KeyExchangeMsg{PublicKey: client.PublicKey})
+		if err != nil {
+			return nil, 0, "", errors.Wrap(err,
+				fmt.Sprintf("failed to make key exchange message from client (%s) to client (%s)",
+					client.Addr, otherClient.Addr),
+			)
+		}
+
+		keyExhangeMessageBytes, err := json.Marshal(keyExhangeMessage)
+		if err != nil {
+			return nil, 0, "", errors.Wrap(err,
+				fmt.Sprintf("failed to marshal key exchange message from client (%s) to client (%s)",
+					client.Addr, otherClient.Addr),
+			)
+		}
+
+		log.Printf("Sent public key to client %s", otherClient.Addr)
+		if err := tcp.Send(otherClient.Conn, keyExhangeMessageBytes); err != nil {
+			return nil, 0, "", errors.Wrap(err,
+				fmt.Sprintf("failed to send key exchange message from client (%s) to client (%s)",
+					client.Addr, otherClient.Addr),
+			)
+		}
 	}
 
 	return client, selectedRoom.ID, role, nil

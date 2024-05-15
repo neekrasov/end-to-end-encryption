@@ -14,9 +14,10 @@ type (
 	Role   string
 
 	Client struct {
-		Addr      string
-		Conn      net.Conn
-		PublicKey *rsa.PublicKey
+		Addr                string
+		Conn                net.Conn
+		PublicKey           *rsa.PublicKey
+		HavePubKeyRecipient bool
 	}
 
 	Room struct {

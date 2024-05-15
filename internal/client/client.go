@@ -33,79 +33,61 @@ func Client() error {
 
 	roomID := 123
 	reader := bufio.NewReader(serverConn)
-	recipientPubKey, err := connect(roomID, pubKey, reader, serverConn)
-	if err != nil {
-		return errors.Wrap(err, "connection to server failed")
-	}
 
-	go func(r *bufio.Reader, recipientPubKey *rsa.PublicKey, privKey *rsa.PrivateKey) {
-		if err := readRecipient(r, recipientPubKey, privKey); err != nil {
-			fmt.Printf("\nfailed to read recipient: %s", err.Error())
-		}
-	}(reader, recipientPubKey, privKey)
-
-	go func(roomID int, recipientPubKey *rsa.PublicKey, privKey *rsa.PrivateKey, serverConn net.Conn) {
-		if err := readStdIn(roomID, recipientPubKey, privKey, serverConn); err != nil {
-			fmt.Printf("\nfailed to read stdin: %s", err.Error())
-		}
-	}(roomID, recipientPubKey, privKey, serverConn)
-
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt)
-	<-stop
-
-	fmt.Println("\nShutting down ...")
-	if err := serverConn.Close(); err != nil {
-		return errors.Wrap(err, "error closing server connection")
-	}
-
-	return nil
-}
-
-func connect(
-	roomID int, pubKey *rsa.PublicKey,
-	r *bufio.Reader, serverConn net.Conn,
-) (*rsa.PublicKey, error) {
 	fmt.Println("Make initial message")
 	initialMsg, err := dto.MakeMessage(dto.Connect, &dto.InitialMsg{
 		Room:      roomID,
 		PublicKey: pubKey,
 	})
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to make initial message")
+		return errors.Wrap(err, "failed to make initial message")
 	}
 
 	initialMsgBytes, err := json.Marshal(initialMsg)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to marshal initial message")
+		return errors.Wrap(err, "failed to marshal initial message")
 	}
 
 	fmt.Println("Send initial message to server")
 	if err = tcp.Send(serverConn, initialMsgBytes); err != nil {
-		return nil, errors.Wrap(err, "failed to send initial message")
+		return errors.Wrap(err, "failed to send initial message")
 	}
 
-	fmt.Println("Wait public key repicient...")
-	var keyExhangeMessageBytes []byte
-	if err := tcp.Read(r, &keyExhangeMessageBytes); err != nil {
-		return nil, errors.Wrap(err, "failed to read key exhange parent message")
-	}
+	updateRecipientPubKey := make(chan *rsa.PublicKey)
+	go func(r *bufio.Reader, updateRecipientPubKey chan *rsa.PublicKey, privKey *rsa.PrivateKey) {
+		if err := readRecipient(r, updateRecipientPubKey, privKey); err != nil {
+			fmt.Printf("\nfailed to read recipient: %s", err.Error())
+		}
+	}(reader, updateRecipientPubKey, privKey)
 
-	var msg dto.Message
-	if err := json.Unmarshal(keyExhangeMessageBytes, &msg); err != nil {
-		return nil, errors.Wrap(err, "failed to unmarshall key exhange parent message bytes")
-	}
+	go func(roomID int, updateRecipientPubKey chan *rsa.PublicKey, privKey *rsa.PrivateKey, serverConn net.Conn) {
+		if err := readStdIn(roomID, updateRecipientPubKey, privKey, serverConn); err != nil {
+			fmt.Printf("\nfailed to read stdin: %s", err.Error())
+		}
+	}(roomID, updateRecipientPubKey, privKey, serverConn)
 
-	var kem dto.KeyExchangeMsg
-	if err := json.Unmarshal(msg.Payload, &kem); err != nil {
-		return nil, errors.Wrap(err, "failed to unmarshall key exhange message bytes")
-	}
-	fmt.Println("Recipient public key received")
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt)
+	<-stop
+	fmt.Println("\nShutting down ...")
 
-	return kem.PublicKey, nil
+	return nil
 }
 
-func readStdIn(roomID int, recipientPubKey *rsa.PublicKey, privKey *rsa.PrivateKey, serverConn net.Conn) error {
+func readStdIn(roomID int, updateRecipientPubKey chan *rsa.PublicKey, privKey *rsa.PrivateKey, serverConn net.Conn) error {
+	var recipientPubKey *rsa.PublicKey
+
+	if recipientPubKey == nil {
+		fmt.Println("Wait recipient public key...")
+		recipientPubKey = <-updateRecipientPubKey
+	}
+
+	go func() {
+		for val := range updateRecipientPubKey {
+			recipientPubKey = val
+		}
+	}()
+
 	for {
 		fmt.Print("Enter message: ")
 		input, err := bufio.NewReader(os.Stdin).ReadString('\n')
@@ -128,13 +110,15 @@ func readStdIn(roomID int, recipientPubKey *rsa.PublicKey, privKey *rsa.PrivateK
 			return errors.Wrap(err, "failed to marshal stdin message")
 		}
 
+		fmt.Println("Send message...")
 		if err := tcp.Send(serverConn, msgBytes); err != nil {
 			return errors.Wrap(err, "failed to send message to server")
 		}
 	}
 }
 
-func readRecipient(r *bufio.Reader, recipientPubKey *rsa.PublicKey, privKey *rsa.PrivateKey) error {
+func readRecipient(r *bufio.Reader, updateRecipientPubKey chan *rsa.PublicKey, privKey *rsa.PrivateKey) error {
+	var recipientPubKey *rsa.PublicKey
 	for {
 		var msgBytes []byte
 		if err := tcp.Read(r, &msgBytes); err != nil {
@@ -146,19 +130,29 @@ func readRecipient(r *bufio.Reader, recipientPubKey *rsa.PublicKey, privKey *rsa
 			return errors.Wrap(err, "failed to unmarshall message")
 		}
 
-		var cypherMsg dto.CypherMsg
-		if err := json.Unmarshal(msg.Payload, &cypherMsg); err != nil {
-			return errors.Wrap(err, "failed to unmarshall text message")
-		}
+		switch msg.Type {
+		case dto.KeysExchange:
+			var kem dto.KeyExchangeMsg
+			if err := json.Unmarshal(msg.Payload, &kem); err != nil {
+				return errors.Wrap(err, "failed to unmarshall key exhange message bytes")
+			}
+			updateRecipientPubKey <- kem.PublicKey
+			recipientPubKey = kem.PublicKey
+		case dto.CipherData:
+			var cypherMsg dto.CypherMsg
+			if err := json.Unmarshal(msg.Payload, &cypherMsg); err != nil {
+				return errors.Wrap(err, "failed to unmarshall text message")
+			}
 
-		decryptedMsg, err := decryptMsg(&cypherMsg, recipientPubKey, privKey)
-		if err != nil {
-			return errors.Wrap(err, "failed to decrypt recipient msg")
-		}
+			decryptedMsg, err := decryptMsg(&cypherMsg, recipientPubKey, privKey)
+			if err != nil {
+				return errors.Wrap(err, "failed to decrypt recipient msg")
+			}
 
-		fmt.Println("\nMessage from recipient: ", decryptedMsg)
-		fmt.Print("\nEnter message: ")
-		time.Sleep(1 * time.Second)
+			fmt.Println("\nMessage from recipient: ", decryptedMsg)
+			fmt.Print("\nEnter message: ")
+			time.Sleep(1 * time.Second)
+		}
 	}
 }
 
