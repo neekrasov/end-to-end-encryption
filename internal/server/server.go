@@ -11,24 +11,33 @@ import (
 
 	"github.com/neekrasov/end-to-end-encryption/internal/dto"
 	"github.com/neekrasov/end-to-end-encryption/pkg/room"
+	"github.com/neekrasov/end-to-end-encryption/pkg/rsa"
 	"github.com/neekrasov/end-to-end-encryption/pkg/tcp"
 	"github.com/pkg/errors"
 )
 
 type Server struct {
-	rooms *room.RoomManager
+	rooms  *room.RoomManager
+	cert   *dto.Certificate
+	domain string
 }
 
 func New(roomManager *room.RoomManager) *Server {
-	return &Server{rooms: roomManager}
+	return &Server{rooms: roomManager, domain: "somedomain"}
 }
 
 func (s *Server) Serve() error {
 	ln, err := net.Listen("tcp", ":8080")
 	if err != nil {
-		return fmt.Errorf("error starting server: %w", err)
+		return errors.Wrap(err, "error starting server")
 	}
 	log.Println("Server was started")
+
+	s.cert, err = getCert(s.domain)
+	if err != nil {
+		return errors.Wrap(err, "error getting certificate")
+	}
+	log.Printf("Cert center certificate expires in: %v", s.cert.ExpiresIn)
 
 	for {
 		clientConn, err := ln.Accept()
@@ -65,6 +74,17 @@ func (s *Server) handleConnection(conn net.Conn) {
 		}
 
 		switch msg.Type {
+		case dto.GetCert:
+			certBytes, err := json.Marshal(s.cert)
+			if err != nil {
+				log.Printf("Failed to marhall certificate: %s", err.Error())
+				return
+			}
+
+			if err := tcp.Send(conn, certBytes); err != nil {
+				log.Printf("Failed to send certificate: %s", err.Error())
+				return
+			}
 		case dto.Connect:
 			client, roomID, position, err := s.handleInitial(conn, msg)
 			if err != nil {
@@ -162,7 +182,7 @@ func keyExchange(selectedRoom *room.Room, client *room.Client, role room.Role) (
 		)
 	}
 
-	keyExhangeMessage, err := dto.MakeMessage(dto.KeysExchange, dto.KeyExchangeMsg{
+	keyExhangeMessage, err := dto.Make(dto.KeysExchange, dto.KeyExchangeMsg{
 		PublicKey: otherClient.PublicKey,
 	})
 	if err != nil {
@@ -172,16 +192,8 @@ func keyExchange(selectedRoom *room.Room, client *room.Client, role room.Role) (
 		)
 	}
 
-	keyExhangeMessageBytes, err := json.Marshal(keyExhangeMessage)
-	if err != nil {
-		return nil, 0, "", errors.Wrap(err,
-			fmt.Sprintf("failed to marshal key exchange message from client (%s) to client (%s)",
-				otherClient.Addr, client.Addr),
-		)
-	}
-
 	log.Printf("Sent public key to %s (%s)", role, otherClient.Addr)
-	if err := tcp.Send(client.Conn, keyExhangeMessageBytes); err != nil {
+	if err := tcp.Send(client.Conn, keyExhangeMessage); err != nil {
 		return nil, 0, "", errors.Wrap(err,
 			fmt.Sprintf("failed to send key exchange message from client (%s) to client (%s)",
 				otherClient.Addr, client.Addr),
@@ -190,7 +202,7 @@ func keyExchange(selectedRoom *room.Room, client *room.Client, role room.Role) (
 	client.HavePubKeyRecipient = true
 
 	if otherClient.HavePubKeyRecipient {
-		keyExhangeMessage, err := dto.MakeMessage(dto.KeysExchange,
+		keyExhangeMessage, err := dto.Make(dto.KeysExchange,
 			dto.KeyExchangeMsg{PublicKey: client.PublicKey})
 		if err != nil {
 			return nil, 0, "", errors.Wrap(err,
@@ -199,16 +211,8 @@ func keyExchange(selectedRoom *room.Room, client *room.Client, role room.Role) (
 			)
 		}
 
-		keyExhangeMessageBytes, err := json.Marshal(keyExhangeMessage)
-		if err != nil {
-			return nil, 0, "", errors.Wrap(err,
-				fmt.Sprintf("failed to marshal key exchange message from client (%s) to client (%s)",
-					client.Addr, otherClient.Addr),
-			)
-		}
-
 		log.Printf("Sent public key to client %s", otherClient.Addr)
-		if err := tcp.Send(otherClient.Conn, keyExhangeMessageBytes); err != nil {
+		if err := tcp.Send(otherClient.Conn, keyExhangeMessage); err != nil {
 			return nil, 0, "", errors.Wrap(err,
 				fmt.Sprintf("failed to send key exchange message from client (%s) to client (%s)",
 					client.Addr, otherClient.Addr),
@@ -260,4 +264,93 @@ func (s *Server) handleText(conn net.Conn, msg dto.Message) error {
 	}
 
 	return nil
+}
+
+func getCertPubKey() (*rsa.PublicKey, error) {
+	certConn, err := net.Dial("tcp", "localhost:8081")
+	if err != nil {
+		return nil, errors.Wrap(err, "error connect cert server")
+	}
+	defer certConn.Close()
+
+	getPubKeyMsg, err := dto.Make(dto.GetPubKey, nil)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to make get pub key cert server msg")
+	}
+
+	if err = tcp.Send(certConn, getPubKeyMsg); err != nil {
+		return nil, errors.Wrap(err, "failed to send get pub key msg to cert server")
+	}
+
+	var pubKeyBytes []byte
+	if err = tcp.Read(bufio.NewReader(certConn), &pubKeyBytes); err != nil {
+		return nil, errors.Wrap(err, "failed to read pub key from cert server")
+	}
+
+	var pubKey rsa.PublicKey
+	if err = json.Unmarshal(pubKeyBytes, &pubKey); err != nil {
+		return nil, errors.Wrap(err, "failed to unmarshall cert server pub key")
+	}
+
+	return &pubKey, nil
+}
+
+func getServerCert(domain string) (*dto.Certificate, error) {
+	certConn, err := net.Dial("tcp", "localhost:8081")
+	if err != nil {
+		return nil, errors.Wrap(err, "error connect cert server")
+	}
+	defer certConn.Close()
+
+	getCertMsg, err := dto.Make(dto.GetCert, dto.GetCertMsg{Domain: domain})
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to make get pub key cert server msg")
+	}
+
+	if err = tcp.Send(certConn, getCertMsg); err != nil {
+		return nil, errors.Wrap(err, "failed to send domain to certification server")
+	}
+
+	var certBytes []byte
+	if err = tcp.Read(bufio.NewReader(certConn), &certBytes); err != nil {
+		return nil, errors.Wrap(err, "failed to read cert from certification server")
+	}
+
+	var cert dto.Certificate
+	if err = json.Unmarshal(certBytes, &cert); err != nil {
+		return nil, errors.Wrap(err, "failed to unmarshall cert pubkey")
+	}
+
+	return &cert, nil
+}
+
+func checkCert(cert *dto.Certificate, certServerPubKey *rsa.PublicKey) error {
+	hash, err := rsa.HashSHA256(cert.Domain + cert.ExpiresIn)
+	if err != nil {
+		return errors.Wrap(err, "error hashing domain expiresIn certificate sum")
+	}
+
+	if !rsa.Verify(cert.Signature, hash, certServerPubKey) {
+		return errors.New("certificate is fake")
+	}
+
+	return nil
+}
+
+func getCert(domain string) (*dto.Certificate, error) {
+	pubkey, err := getCertPubKey()
+	if err != nil {
+		return nil, errors.Wrap(err, "error getting pub key from cert server")
+	}
+
+	cert, err := getServerCert(domain)
+	if err != nil {
+		return nil, errors.Wrap(err, "error getting certificate from cert server")
+	}
+
+	if err := checkCert(cert, pubkey); err != nil {
+		return nil, errors.Wrap(err, "failed to check certificate")
+	}
+
+	return cert, nil
 }

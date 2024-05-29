@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	if err := client.Client(); err != nil {
+	if err := client.Run(); err != nil {
 		fmt.Println(err)
 	}
 }

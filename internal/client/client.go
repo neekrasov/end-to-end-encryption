@@ -18,7 +18,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-func Client() error {
+func Run() error {
 	fmt.Print("Enter room identifier: ")
 	input, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil {
@@ -43,8 +43,26 @@ func Client() error {
 	}
 	defer serverConn.Close()
 
+	fmt.Println("Getting cert pub key...")
+	certPubKey, err := getCertPubKey()
+	if err != nil {
+		return errors.Wrap(err, "failed to get cert pub key")
+	}
+
+	fmt.Println("Getting server cert...")
+	serverCert, err := getServerCert(serverConn)
+	if err != nil {
+		return errors.Wrap(err, "failed to get server cert")
+	}
+
+	fmt.Println("Checking server cert...")
+	if err := checkCert(serverCert, certPubKey); err != nil {
+		return errors.Wrap(err, "check cert failed")
+	}
+	fmt.Println("Server certificate check is succesfully")
+
 	fmt.Println("Make initial message")
-	initialMsg, err := dto.MakeMessage(dto.Connect, &dto.InitialMsg{
+	initialMsg, err := dto.Make(dto.Connect, &dto.InitialMsg{
 		Room:      roomID,
 		PublicKey: pubKey,
 	})
@@ -52,13 +70,8 @@ func Client() error {
 		return errors.Wrap(err, "failed to make initial message")
 	}
 
-	initialMsgBytes, err := json.Marshal(initialMsg)
-	if err != nil {
-		return errors.Wrap(err, "failed to marshal initial message")
-	}
-
 	fmt.Println("Send initial message to server")
-	if err = tcp.Send(serverConn, initialMsgBytes); err != nil {
+	if err = tcp.Send(serverConn, initialMsg); err != nil {
 		return errors.Wrap(err, "failed to send initial message")
 	}
 
@@ -98,9 +111,10 @@ func readStdIn(roomID int, updateRecipientPubKey chan *rsa.PublicKey, privKey *r
 		}
 	}()
 
+	stdinReader := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Print("Enter message: ")
-		input, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		input, err := stdinReader.ReadString('\n')
 		if err != nil {
 			return errors.Wrap(err, "failed to read message")
 		}
@@ -110,18 +124,13 @@ func readStdIn(roomID int, updateRecipientPubKey chan *rsa.PublicKey, privKey *r
 			return errors.Wrap(err, "Failed to make cypher message")
 		}
 
-		msg, err := dto.MakeMessage(dto.CipherData, cypherMsg)
+		msg, err := dto.Make(dto.CipherData, cypherMsg)
 		if err != nil {
 			return errors.Wrap(err, "failed to make text message")
 		}
 
-		msgBytes, err := json.Marshal(msg)
-		if err != nil {
-			return errors.Wrap(err, "failed to marshal stdin message")
-		}
-
 		fmt.Println("Send message...")
-		if err := tcp.Send(serverConn, msgBytes); err != nil {
+		if err := tcp.Send(serverConn, msg); err != nil {
 			return errors.Wrap(err, "failed to send message to server")
 		}
 	}
@@ -211,4 +220,78 @@ func decryptMsg(cypherMsg *dto.CypherMsg, recipientPubKey *rsa.PublicKey, privKe
 	}
 
 	return msg, nil
+}
+
+func getCertPubKey() (*rsa.PublicKey, error) {
+	certConn, err := net.Dial("tcp", "localhost:8081")
+	if err != nil {
+		return nil, errors.Wrap(err, "error connect cert server")
+	}
+	defer certConn.Close()
+
+	getPubKeyMsg, err := dto.Make(dto.GetPubKey, nil)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to make get pub key cert server msg")
+	}
+
+	if err = tcp.Send(certConn, getPubKeyMsg); err != nil {
+		return nil, errors.Wrap(err, "failed to send get pub key msg to cert server")
+	}
+
+	var pubKeyBytes []byte
+	if err = tcp.Read(bufio.NewReader(certConn), &pubKeyBytes); err != nil {
+		return nil, errors.Wrap(err, "failed to read pub key from cert server")
+	}
+
+	var pubKey rsa.PublicKey
+	if err = json.Unmarshal(pubKeyBytes, &pubKey); err != nil {
+		return nil, errors.Wrap(err, "failed to unmarshall cert server pub key")
+	}
+
+	return &pubKey, nil
+}
+
+func getServerCert(serverConn net.Conn) (*dto.Certificate, error) {
+	getCertMsg, err := dto.Make(dto.GetCert, nil)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to make get server cert msg")
+	}
+
+	if err = tcp.Send(serverConn, getCertMsg); err != nil {
+		return nil, errors.Wrap(err, "failed to send domain to certification server")
+	}
+
+	var certBytes []byte
+	if err = tcp.Read(bufio.NewReader(serverConn), &certBytes); err != nil {
+		return nil, errors.Wrap(err, "failed to read cert from certification server")
+	}
+
+	var cert dto.Certificate
+	if err = json.Unmarshal(certBytes, &cert); err != nil {
+		return nil, errors.Wrap(err, "failed to unmarshall cert pubkey")
+	}
+
+	return &cert, nil
+}
+
+func checkCert(cert *dto.Certificate, certServerPubKey *rsa.PublicKey) error {
+	hash, err := rsa.HashSHA256(cert.Domain + cert.ExpiresIn)
+	if err != nil {
+		return errors.Wrap(err, "error hashing domain expiresIn certificate sum")
+	}
+
+	if !rsa.Verify(cert.Signature, hash, certServerPubKey) {
+		return errors.New("certificate is fake")
+	}
+
+	certTime, err := time.Parse("2006-01-02 15:04:05", cert.ExpiresIn)
+	if err != nil {
+		return errors.Wrap(err, "failed to parse cert expiresIs time")
+	}
+
+	if certTime.Before(time.Now().UTC()) {
+		return errors.New("the certificate has expired")
+	}
+
+	return nil
 }

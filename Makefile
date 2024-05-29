@@ -5,3 +5,7 @@ client:
  .PHONY: server
 server:
 	go run cmd/server/main.go
+
+ .PHONY: center
+center:
+	go run cmd/cert_center/main.go

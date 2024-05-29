@@ -15,11 +15,18 @@ const (
 	Connect      MessageType = "connect"
 	CipherData   MessageType = "cipherdata"
 	KeysExchange MessageType = "exhangekeys"
+	GetPubKey    MessageType = "pubkey"
+	GetCert      MessageType = "cert"
 )
 
 // ----- Messages ------------
 
 type (
+	Certificate struct {
+		Signature *big.Int `json:"signature"`
+		Domain    string   `json:"domain"`
+		ExpiresIn string   `json:"expiresIn"`
+	}
 	Message struct {
 		Type    MessageType `json:"type"`
 		Payload []byte      `json:"payload"`
@@ -28,11 +35,6 @@ type (
 	InitialMsg struct {
 		Room      int            `json:"room"`
 		PublicKey *rsa.PublicKey `json:"publicKey"`
-	}
-
-	TextMessage struct {
-		Room int    `json:"room"`
-		Text string `json:"text"`
 	}
 
 	CypherMsg struct {
@@ -45,13 +47,22 @@ type (
 	KeyExchangeMsg struct {
 		PublicKey *rsa.PublicKey `json:"publicKey"`
 	}
+
+	GetCertMsg struct {
+		Domain string `json:"domain"`
+	}
 )
 
-func MakeMessage(msgType MessageType, msg any) (*Message, error) {
+func Make(msgType MessageType, msg any) ([]byte, error) {
 	payload, err := json.Marshal(msg)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Message{Type: msgType, Payload: payload}, nil
+	msgBytes, err := json.Marshal(Message{Type: msgType, Payload: payload})
+	if err != nil {
+		return nil, err
+	}
+
+	return msgBytes, nil
 }
