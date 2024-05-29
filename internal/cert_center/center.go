@@ -44,10 +44,9 @@ func handleConnection(
 	privKey *rsa.PrivateKey,
 ) {
 	defer conn.Close()
-	reader := bufio.NewReader(conn)
 
 	var msgBytes []byte
-	if err := tcp.Read(reader, &msgBytes); err != nil {
+	if err := tcp.Read(bufio.NewReader(conn), &msgBytes); err != nil {
 		log.Printf("Failed to read client message: %s", err.Error())
 		return
 	}

@@ -324,7 +324,7 @@ func getServerCert(domain string) (*dto.Certificate, error) {
 	return &cert, nil
 }
 
-func checkCert(cert *dto.Certificate, certServerPubKey *rsa.PublicKey) error {
+func checkCert(cert *dto.Certificate, certServerPubKey *rsa.PublicKey, domain string) error {
 	hash, err := rsa.HashSHA256(cert.Domain + cert.ExpiresIn)
 	if err != nil {
 		return errors.Wrap(err, "error hashing domain expiresIn certificate sum")
@@ -332,6 +332,10 @@ func checkCert(cert *dto.Certificate, certServerPubKey *rsa.PublicKey) error {
 
 	if !rsa.Verify(cert.Signature, hash, certServerPubKey) {
 		return errors.New("certificate is fake")
+	}
+
+	if cert.Domain != domain {
+		return errors.New("invalid domain")
 	}
 
 	return nil
@@ -348,7 +352,7 @@ func getCert(domain string) (*dto.Certificate, error) {
 		return nil, errors.Wrap(err, "error getting certificate from cert server")
 	}
 
-	if err := checkCert(cert, pubkey); err != nil {
+	if err := checkCert(cert, pubkey, domain); err != nil {
 		return nil, errors.Wrap(err, "failed to check certificate")
 	}
 
