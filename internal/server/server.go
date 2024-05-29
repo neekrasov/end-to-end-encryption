@@ -8,6 +8,8 @@ import (
 	"log"
 	"net"
 	"runtime/debug"
+	"sync"
+	"time"
 
 	"github.com/neekrasov/end-to-end-encryption/internal/dto"
 	"github.com/neekrasov/end-to-end-encryption/pkg/room"
@@ -20,6 +22,8 @@ type Server struct {
 	rooms  *room.RoomManager
 	cert   *dto.Certificate
 	domain string
+
+	certMu sync.Mutex
 }
 
 func New(roomManager *room.RoomManager) *Server {
@@ -38,6 +42,8 @@ func (s *Server) Serve() error {
 		return errors.Wrap(err, "error getting certificate")
 	}
 	log.Printf("Cert center certificate expires in: %v", s.cert.ExpiresIn)
+
+	go s.updateCert()
 
 	for {
 		clientConn, err := ln.Accept()
@@ -75,11 +81,13 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 		switch msg.Type {
 		case dto.GetCert:
+			s.certMu.Lock()
 			certBytes, err := json.Marshal(s.cert)
 			if err != nil {
 				log.Printf("Failed to marhall certificate: %s", err.Error())
 				return
 			}
+			s.certMu.Unlock()
 
 			if err := tcp.Send(conn, certBytes); err != nil {
 				log.Printf("Failed to send certificate: %s", err.Error())
@@ -357,4 +365,34 @@ func getCert(domain string) (*dto.Certificate, error) {
 	}
 
 	return cert, nil
+}
+
+func calculateSleepDuration(expirationTimeString string) (time.Duration, error) {
+	expirationTime, err := time.Parse("2006-01-02 15:04:05", expirationTimeString)
+	if err != nil {
+		return 0, fmt.Errorf("ошибка парсинга даты истечения: %w", err)
+	}
+	return time.Until(expirationTime), nil
+}
+
+func (s *Server) updateCert() {
+	for {
+		sleepTime, err := calculateSleepDuration(s.cert.ExpiresIn)
+		if err != nil {
+			log.Printf("Failed to calculate sleep duration: %s", err.Error())
+			return
+		}
+
+		time.Sleep(sleepTime)
+
+		s.certMu.Lock()
+		s.cert, err = getCert(s.domain)
+		if err != nil {
+			log.Printf("Failed to get certificate to update: %s", err.Error())
+			return
+		}
+		s.certMu.Unlock()
+
+		log.Printf("Certificate updated, expires in %s", s.cert.ExpiresIn)
+	}
 }

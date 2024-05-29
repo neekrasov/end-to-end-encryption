@@ -92,6 +92,7 @@ func handleConnection(
 			log.Printf("failed to marshall cert: %s", err.Error())
 			return
 		}
+		log.Printf("Signed certificate for domain %s, expires in %s", getCertMsg.Domain, expiresIn)
 
 		if err = tcp.Send(conn, certBytes); err != nil {
 			log.Printf("failed to send cert response: %s", err.Error())
